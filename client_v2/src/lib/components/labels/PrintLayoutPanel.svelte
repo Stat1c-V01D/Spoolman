@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import Button from '$components/Button.svelte';
 	import Pagination from '$components/Pagination.svelte';
 	import NumberInput from '../NumberInput.svelte';
@@ -7,7 +7,14 @@
 	import { labelKind, type LabelDesign } from '$lib/labels/types';
 	import type { LabelBinding } from '$lib/labels/template';
 	import { PAPER_NAMES, layoutMargin, paperSize, sheetGrid } from '$lib/labels/paper';
-	import { printLabels, exportLabels, ZIP_THRESHOLD } from '$lib/labels/print';
+	import {
+		printLabels,
+		exportLabels,
+		sendLabelsToPrinter,
+		getLabelPrinter,
+		type LabelPrinterInfo,
+		ZIP_THRESHOLD
+	} from '$lib/labels/print';
 	import { EXPORT_FORMATS, resolveExportFormat } from '$lib/labels/export';
 	import { spoolSource } from '$lib/api/spoolSource';
 	import { searchAll } from '$lib/api/search';
@@ -40,6 +47,14 @@
 	let searching = $state(false);
 	let printing = $state(false);
 	let saving = $state(false);
+
+	// Server-side label printer (printserver fork) – button only shows when configured.
+	let labelPrinter = $state<LabelPrinterInfo | null>(null);
+	let sending = $state(false);
+	let sendResult = $state('');
+	onMount(() => {
+		getLabelPrinter().then((p) => (labelPrinter = p));
+	});
 
 	// The full inventory can be thousands of spools, so loading every one up front
 	// was an extremely heavy query. Instead the list shows one page at a time and
@@ -340,6 +355,21 @@
 			console.error('Print failed', e);
 		} finally {
 			printing = false;
+		}
+	}
+
+	async function doSendToPrinter() {
+		if (bindings.length === 0) return;
+		sending = true;
+		sendResult = '';
+		try {
+			const n = await sendLabelsToPrinter({ design, bindings, layout, baseUrl: settings.baseUrl });
+			sendResult = `${n} sent to ${labelPrinter?.model ?? 'label printer'}`;
+		} catch (e) {
+			console.error('Label printer failed', e);
+			sendResult = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+		} finally {
+			sending = false;
 		}
 	}
 
@@ -727,6 +757,13 @@
 			</div>
 		{/if}
 		<div class="print-btn">
+			{#if labelPrinter?.enabled}
+				<Button onclick={doSendToPrinter} disabled={bindings.length === 0 || sending}>
+					{sending
+						? m['labels.preparing']()
+						: `Label printer (${bindings.length * Math.max(1, layout.copies)})`}
+				</Button>
+			{/if}
 			{#if layout.mode === 'image'}
 				<Button onclick={doExport} disabled={bindings.length === 0 || saving}>
 					{saving
@@ -739,6 +776,9 @@
 						? m['labels.preparing']()
 						: m['labels.printN']({ count: bindings.length * Math.max(1, layout.copies) })}
 				</Button>
+			{/if}
+			{#if sendResult}
+				<span class="muted">{sendResult}</span>
 			{/if}
 		</div>
 	</div>

@@ -1,4 +1,5 @@
 import Konva from 'konva';
+import { getJson, postJson } from '$lib/api/http';
 import { labelKind, type LabelDesign, type PrintLayout } from './types';
 import type { LabelBinding } from './template';
 import { elementToShape, qrLogoBox } from './render';
@@ -242,6 +243,47 @@ export async function exportLabels({ design, bindings, layout, baseUrl }: PrintJ
 	for (const f of files) entries[f.name] = f.bytes;
 	const zipped = zipSync(entries, { level: format.zipLevel });
 	downloadBytes(zipped, 'spoolman-labels.zip', 'application/zip');
+}
+
+/** Server-side label printer (printserver fork): what the backend reports. */
+export interface LabelPrinterInfo {
+	enabled: boolean;
+	printer: string | null;
+	model: string;
+	label: string;
+}
+
+/** Ask the server whether a label printer is configured. Never throws. */
+export async function getLabelPrinter(): Promise<LabelPrinterInfo | null> {
+	try {
+		return await getJson<LabelPrinterInfo>('/labelprinter');
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Render the selected labels exactly like the PNG export (same designer raster,
+ * same DPI) and hand them to the server's label printer instead of the browser
+ * print dialog. Returns the number of labels printed (copies included).
+ */
+export async function sendLabelsToPrinter({ design, bindings, layout, baseUrl }: PrintJob): Promise<number> {
+	if (bindings.length === 0) return 0;
+	const logoImage = await getLogoImage().catch(() => null);
+	const dpi = resolveDpi(layout);
+	const kind = labelKind(design);
+	const labels = bindings.map((b) => {
+		const dataUrl = renderLabelDataUrl(design, b, baseUrl, logoImage, dpi);
+		return {
+			name: `spoolman-${kind}-label-${kind === 'filament' ? b.filament?.id : b.spool?.id}`,
+			png_base64: dataUrl.slice(dataUrl.indexOf(',') + 1)
+		};
+	});
+	const res = await postJson<{ printed: number }>('/labelprinter/print', {
+		labels,
+		copies: Math.max(1, layout.copies)
+	});
+	return res.printed;
 }
 
 /** Insets in mm to push a label's content in from each edge (for the safe-zone). */
